@@ -1,0 +1,18 @@
+# Dataset
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Joern generated files
+*.bin
+*.json.tmp
+
+# Results / generated data
+results/
