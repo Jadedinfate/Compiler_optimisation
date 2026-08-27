@@ -1,5 +1,5 @@
 # Dataset
-data/
+dataset/
 
 # Python
 __pycache__/
@@ -17,6 +17,10 @@ venv/
 # Results / generated data
 results/
 
+# Build/package files
+build/
+dist/
+*.egg-info/
+
 logs
-env
 .env
