@@ -3,7 +3,10 @@ from pathlib import Path
 ##for dataset
 class DataConfig:
 
-    DATA_PATH = Path("dataset/train_features_final.csv")
+    DATA_DIR = Path("data")
+    CLEAN_SPLITS_DIR = Path("data/clean_splits")
+    DATA_PATH = Path("data/clean_splits/train.csv")
+    MODELS_DIR = Path("models")
 
     TARGET_COLUMN = "target"
 
