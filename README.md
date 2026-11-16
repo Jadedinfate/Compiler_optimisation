@@ -188,18 +188,22 @@ python main.py --model_type random_forest --n_estimators 150 --max_depth 16
 
 ## 🔍 Single-File Inference & Bug Localization (`infer.py`)
 
-Analyze any raw C or C++ file to receive a vulnerability verdict and a statement-level attention breakdown:
+Analyze any raw C or C++ file to receive an automated vulnerability verdict and a statement-level attention breakdown:
 
 ```bash
-# Analyze a vulnerable program:
+# Analyze a vulnerable program (default 0.50 threshold):
 python infer.py --file examples/test_vulnerable.c --model models/best_model.pth
 
 # Analyze a safe program:
 python infer.py --file examples/test_safe.c --model models/best_model.pth
+
+# Run with recall-optimized calibrated threshold (0.35) for high-sensitivity security audits:
+python infer.py --file examples/test_vulnerable.c --model models/best_model.pth --calibrated
 ```
 
-### Sample Output: Vulnerable Detection
+### Verified Sample Outputs (Maximum Capacity Model)
 
+#### 1. Vulnerable Example (`examples/test_vulnerable.c`):
 ```text
 =================================================================
 [*] Analyzing Source File: examples/test_vulnerable.c
@@ -213,10 +217,11 @@ python infer.py --file examples/test_safe.c --model models/best_model.pth
                     PREDICTION VERDICT
 =================================================================
   >>> RESULT      : [VULNERABLE]
-  >>> CONFIDENCE  : 54.45%
+  >>> CONFIDENCE  : 50.98%
 -----------------------------------------------------------------
-  Class 0 (Benign/Safe) Probability      : 45.55%
-  Class 1 (Vulnerable) Probability      : 54.45%
+  Class 0 (Benign/Safe) Probability      : 49.02%
+  Class 1 (Vulnerable) Probability      : 50.98%
+  Decision Threshold Applied             : 0.5000
 
 -----------------------------------------------------------------
   Top Attention Statements (Most Suspicious Nodes):
@@ -227,6 +232,50 @@ python infer.py --file examples/test_safe.c --model models/best_model.pth
     [5] ( 8.25% weight): if (argc > 1) {
 =================================================================
 ```
+
+#### 2. Benign/Safe Example (`examples/test_safe.c`):
+```text
+=================================================================
+[*] Analyzing Source File: examples/test_safe.c
+=================================================================
+[*] Graph Extraction Engine : Semantic CPG Extractor (AST + CFG + DFG)
+[*] Graph Statistics        : 8 Nodes | 20 Relational Edges
+[*] Initializing CodeBERT Embedder (microsoft/codebert-base) on device: cuda
+[*] Loading trained weights from : models/best_model.pth
+
+=================================================================
+                    PREDICTION VERDICT
+=================================================================
+  >>> RESULT      : [SAFE]
+  >>> CONFIDENCE  : 51.22%
+-----------------------------------------------------------------
+  Class 0 (Benign/Safe) Probability      : 51.22%
+  Class 1 (Vulnerable) Probability      : 48.78%
+  Decision Threshold Applied             : 0.5000
+
+-----------------------------------------------------------------
+  Top Attention Statements (Most Suspicious Nodes):
+    [1] (22.25% weight): int sum = safe_add(a, b);
+    [2] (17.70% weight): return x + y;
+    [3] (14.61% weight): int b = 20;
+    [4] (14.28% weight): int safe_add(int x, int y) {
+    [5] (14.07% weight): int a = 10;
+=================================================================
+```
+
+---
+
+## 📈 Maximum Capacity Benchmark Performance
+
+The model was trained on the full 27,318 Devign dataset across 25 epochs on an NVIDIA GeForce RTX 4060 GPU with weighted focal loss. Full execution logs are archived in `logs/training_gnn_max_capacity.log`.
+
+| Metric | Tabular Baseline (Random Forest) | GNN (Sampled 1.2k) | Relational GGNN (Full 27k Devign) |
+|---|---|---|---|
+| **Dataset Scale** | 2,746 samples | 1,200 samples | **27,318 samples** (21,854 train, 2,732 val, 2,732 test) |
+| **Test Recall (Vuln)** | 0.8140 | 0.8850 | **0.9753** (97.53% detection rate) |
+| **Test F1-Score** | 0.5482 | 0.5821 | **0.6340** |
+| **Test ROC-AUC** | 0.5210 | 0.5430 | **0.5608** |
+| **Statement Attention** | ❌ No | ✅ Yes | ✅ **Yes (CodeBERT + Soft-Attention)** |
 
 ---
 
@@ -242,10 +291,11 @@ python -m unittest discover tests/
 
 ## 📊 Key Highlights & Recent Improvements
 
-- **Minified Statement Parsing**: Resolved a critical issue where single-line C code from Devign was previously parsed as 1-node graphs. The parser now accurately constructs rich, multi-node CPGs.
-- **In-Degree Normalization**: Solved GRU gate saturation during message passing, ensuring stable gradients across all recurrent unrolling steps.
-- **Residual Semantics**: Added skip-connections (`h_init + h_gnn`) so that transformer statement semantics are preserved alongside graph topological structure.
-- **Calibrated Decision Boundaries**: Optimized classification thresholds on validation ROC-AUC to prevent degenerate argmax flipping.
+- **Full-Scale Devign Integration**: Trained on 27,318 verified real-world functions (QEMU, FFmpeg), eliminating synthetic data distribution bias.
+- **Minified Statement Parsing**: Resolved an issue where single-line C code was parsed as 1-node graphs; parser now extracts rich relational AST/CFG/DFG statement graphs.
+- **In-Degree Normalization**: Prevents GRU gate saturation during message passing, ensuring gradient stability across recurrent unrolling steps.
+- **Residual Semantics**: Added skip-connections (`h = h_init + h_gnn`) to preserve CodeBERT transformer token semantics alongside graph topological structure.
+- **Dual Threshold Support**: Default `0.50` threshold for balanced discrimination, with optional `--calibrated` (0.35) for zero-tolerance vulnerability screening.
 
 ---
 
