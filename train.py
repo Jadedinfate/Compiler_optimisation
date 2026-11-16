@@ -144,9 +144,10 @@ def train(args):
     print(f"[*] Training on device: {device}")
 
     # 1. Load PyG Datasets
-    val_samples = max(args.max_samples // 8, 50) if args.max_samples else None
-    test_samples = max(args.max_samples // 8, 50) if args.max_samples else None
-    train_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="train", max_samples=args.max_samples, dataset_name=args.dataset_name)
+    train_samples = args.max_samples if args.max_samples and args.max_samples > 0 else None
+    val_samples = max(train_samples // 8, 50) if train_samples else None
+    test_samples = max(train_samples // 8, 50) if train_samples else None
+    train_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="train", max_samples=train_samples, dataset_name=args.dataset_name)
     val_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="val", max_samples=val_samples, dataset_name=args.dataset_name)
     test_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="test", max_samples=test_samples, dataset_name=args.dataset_name)
 
@@ -281,24 +282,44 @@ def train(args):
     print("=" * 50 + "\n")
 
 
+class DualLogger:
+    def __init__(self, log_path="logs/training_gnn_max_capacity.log"):
+        os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
+        self.file = open(log_path, "w", encoding="utf-8")
+        self.stdout = sys.stdout
+
+    def write(self, message):
+        self.stdout.write(message)
+        self.file.write(message)
+        self.file.flush()
+
+    def flush(self):
+        self.stdout.flush()
+        self.file.flush()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train GGNN on CPGs for Vulnerability Prediction.")
     parser.add_argument("--data_dir", type=str, default="data", help="Dataset directory containing clean_splits/ or devign/")
     parser.add_argument("--dataset_name", type=str, default="devign", help="Dataset identifier for caching")
     parser.add_argument("--save_path", type=str, default="models/best_model.pth", help="Checkpoint save destination")
+    parser.add_argument("--log_file", type=str, default="logs/training_gnn_max_capacity.log", help="Log output destination")
     parser.add_argument("--in_channels", type=int, default=768, help="Node embedding dim from CodeBERT")
     parser.add_argument("--hidden_dim", type=int, default=256, help="GGNN hidden dimension")
     parser.add_argument("--num_layers", type=int, default=4, help="GGNN unrolling timesteps")
     parser.add_argument("--num_edge_types", type=int, default=3, help="Number of edge relations (AST, CFG, DFG)")
     parser.add_argument("--dropout", type=float, default=0.3, help="Dropout probability")
-    parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=32, help="Graph mini-batch size")
-    parser.add_argument("--lr", type=float, default=5e-4, help="AdamW learning rate")
+    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=64, help="Graph mini-batch size")
+    parser.add_argument("--lr", type=float, default=1e-3, help="AdamW learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay")
-    parser.add_argument("--gamma", type=float, default=1.0, help="Focal loss focusing parameter")
-    parser.add_argument("--max_samples", type=int, default=1200, help="Quick test sample limit (None for full)")
+    parser.add_argument("--gamma", type=float, default=0.0, help="Focal loss focusing parameter (0.0 for weighted CE)")
+    parser.add_argument("--max_samples", type=int, default=0, help="Sample limit (0 or None for full capacity)")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Compute device")
     args = parser.parse_args()
+
+    if args.log_file:
+        sys.stdout = DualLogger(args.log_file)
 
     train(args)
 

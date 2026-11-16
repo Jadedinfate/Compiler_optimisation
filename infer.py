@@ -86,7 +86,7 @@ def get_graph_for_file(file_path: str) -> Tuple[List[str], List[Tuple[int, int]]
     return node_codes, edges, edge_types, method_used
 
 
-def predict_file(file_path: str, model_path: str, device_name: str, show_attention: bool = True):
+def predict_file(file_path: str, model_path: str, device_name: str, show_attention: bool = True, threshold: Optional[float] = None, use_calibrated: bool = False):
     """Executes end-to-end inference for a single C/C++ source file."""
     if not os.path.exists(file_path):
         print(f"[!] Error: Target source file does not exist: {file_path}")
@@ -156,6 +156,16 @@ def predict_file(file_path: str, model_path: str, device_name: str, show_attenti
             dropout=dropout
         ).to(device)
 
+    # Decision threshold selection
+    if use_calibrated:
+        active_threshold = calibrated_threshold
+        print(f"[*] Using validation-calibrated threshold: {active_threshold:.2f}")
+    elif threshold is not None:
+        active_threshold = threshold
+        print(f"[*] Using decision threshold: {active_threshold:.2f}")
+    else:
+        active_threshold = 0.50
+
     # 4. Inference Forward Pass
     model.eval()
     with torch.no_grad():
@@ -170,7 +180,7 @@ def predict_file(file_path: str, model_path: str, device_name: str, show_attenti
         probs = F.softmax(logits, dim=-1).squeeze(0)
         conf_benign = float(probs[0].item()) * 100.0
         conf_vuln = float(probs[1].item()) * 100.0
-        pred_class = 1 if (conf_vuln / 100.0) >= calibrated_threshold else 0
+        pred_class = 1 if (conf_vuln / 100.0) >= active_threshold else 0
 
     # 5. Output Result
     print("\n" + "=" * 65)
@@ -207,6 +217,8 @@ def main():
     parser = argparse.ArgumentParser(description="Static Vulnerability Prediction CLI using PyG GGNN.")
     parser.add_argument("--file", "-f", type=str, required=True, help="Path to raw C/C++ source file")
     parser.add_argument("--model", "-m", type=str, default="models/best_model.pth", help="Trained model weights (.pth)")
+    parser.add_argument("--threshold", "-t", type=float, default=0.50, help="Decision threshold for vulnerability class (default: 0.50)")
+    parser.add_argument("--calibrated", action="store_true", help="Use checkpoint's validation-tuned threshold instead of 0.50")
     parser.add_argument("--device", "-d", type=str, default="cuda", choices=["cuda", "cpu"], help="Inference device")
     parser.add_argument("--no_attention", action="store_true", help="Disable suspicious statement ranking")
     args = parser.parse_args()
@@ -215,7 +227,9 @@ def main():
         file_path=args.file,
         model_path=args.model,
         device_name=args.device,
-        show_attention=not args.no_attention
+        show_attention=not args.no_attention,
+        threshold=args.threshold if not args.calibrated else None,
+        use_calibrated=args.calibrated
     )
 
 

@@ -92,7 +92,7 @@ class CodeBERTNodeEmbedder:
         self._cache: Dict[str, torch.Tensor] = {}
 
     @torch.no_grad()
-    def embed_texts(self, texts: List[str], batch_size: int = 64) -> torch.Tensor:
+    def embed_texts(self, texts: List[str], batch_size: int = 128) -> torch.Tensor:
         """Embeds a list of node code statements into [len(texts), 768] tensor."""
         if not texts:
             return torch.zeros((0, 768), dtype=torch.float32)

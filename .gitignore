@@ -21,8 +21,8 @@ results/
 build/
 dist/
 *.egg-info/
-
-logs
+logs/*
+!logs/training_gnn_max_capacity.log
 .env
 
 # Large raw datasets and local processed caches
