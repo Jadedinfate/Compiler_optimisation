@@ -267,12 +267,36 @@ def synthesize_code_from_row(row) -> str:
     return "\n".join(lines)
 
 
-def build_cpg_from_code(code_str: str) -> Tuple[List[str], List[Tuple[int, int]], List[int]]:
+def split_c_code_into_statements(code_str: str) -> List[str]:
+    """Splits both formatted and minified C code into individual semantic statements."""
+    if code_str.count("\n") > 3:
+        stmts = [line.strip() for line in code_str.split("\n") if line.strip() and not line.strip().startswith("//")]
+        if len(stmts) > 1:
+            return stmts
+
+    # For minified C code: split on semicolons and braces
+    pattern = re.compile(r'([;{}])')
+    raw_tokens = pattern.split(code_str)
+    statements: List[str] = []
+    buffer = ""
+    for token in raw_tokens:
+        buffer += token
+        if token in {";", "{", "}"}:
+            stmt = buffer.strip()
+            if stmt and len(stmt) > 1:
+                statements.append(stmt)
+            buffer = ""
+    if buffer.strip() and len(buffer.strip()) > 1:
+        statements.append(buffer.strip())
+    return statements if statements else [code_str.strip()]
+
+
+def build_cpg_from_code(code_str: str, max_nodes: int = 64) -> Tuple[List[str], List[Tuple[int, int]], List[int]]:
     """
     Constructs an AST+CFG+DFG representation directly from C/C++ source code.
-    Used as an immediate, deterministic graph extractor when raw DOT/JSON files are not present.
+    Extracts individual statements, builds hierarchical AST, sequential & branch CFG, and variable def-use DFG.
     """
-    lines = [line.strip() for line in code_str.split("\n") if line.strip() and not line.strip().startswith("//")]
+    lines = split_c_code_into_statements(code_str)[:max_nodes]
     if not lines:
         lines = ["void empty_function()", "{", "return;", "}"]
 
@@ -281,7 +305,7 @@ def build_cpg_from_code(code_str: str) -> Tuple[List[str], List[Tuple[int, int]]
     edge_types: List[int] = []
 
     num_nodes = len(lines)
-    # 1. AST edges: Hierarchical tree connections
+    # 1. AST edges: Hierarchical tree connections from function root
     root = 0
     for i in range(1, num_nodes):
         edges.append((root, i))
@@ -292,7 +316,6 @@ def build_cpg_from_code(code_str: str) -> Tuple[List[str], List[Tuple[int, int]]
         edges.append((i, i + 1))
         edge_types.append(1)  # CFG
         if any(kw in lines[i] for kw in ["if", "while", "for", "switch"]):
-            # Jump edge (branching)
             jump_target = min(i + 2, num_nodes - 1)
             if jump_target != i + 1:
                 edges.append((i, jump_target))
@@ -305,7 +328,6 @@ def build_cpg_from_code(code_str: str) -> Tuple[List[str], List[Tuple[int, int]]
 
     for i, line in enumerate(lines):
         tokens = set(var_pattern.findall(line)) - keywords
-        # If variable was previously referenced/defined, connect DFG
         for token in tokens:
             if token in var_defs:
                 edges.append((var_defs[token], i))
@@ -329,6 +351,7 @@ class CPGVulnerabilityDataset(InMemoryDataset):
         split: str = "train",
         graph_dir: Optional[str] = None,
         max_samples: Optional[int] = None,
+        dataset_name: str = "devign",
         transform=None,
         pre_transform=None,
         pre_filter=None
@@ -336,6 +359,7 @@ class CPGVulnerabilityDataset(InMemoryDataset):
         self.split = split
         self.graph_dir = graph_dir
         self.max_samples = max_samples
+        self.dataset_name = dataset_name
         super().__init__(root, transform, pre_transform, pre_filter)
         
         # Load processed dataset compatible with all PyG versions
@@ -348,6 +372,9 @@ class CPGVulnerabilityDataset(InMemoryDataset):
 
     @property
     def raw_dir(self) -> str:
+        devign_dir = os.path.join(self.root, "devign")
+        if os.path.exists(devign_dir):
+            return devign_dir
         return os.path.join(self.root, "clean_splits")
 
     @property
@@ -356,45 +383,66 @@ class CPGVulnerabilityDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self) -> List[str]:
-        return [f"{self.split}.csv", f"{self.split}.json"]
+        split_key = "valid" if self.split == "val" else self.split
+        return [f"{split_key}_devign.json", f"{self.split}.json", f"{self.split}.csv"]
 
     @property
     def processed_file_names(self) -> List[str]:
         limit_suffix = f"_{self.max_samples}" if self.max_samples else ""
-        return [f"{self.split}{limit_suffix}.pt"]
+        return [f"{self.dataset_name}_{self.split}{limit_suffix}.pt"]
 
     def download(self):
-        # Data is pre-split via fix_data.py
+        # Data is pre-downloaded via scripts/download_devign.py
         pass
 
     def process(self):
         """Processes raw splits and graph files into PyG Data objects."""
         os.makedirs(self.processed_dir, exist_ok=True)
-        split_csv = os.path.join(self.raw_dir, f"{self.split}.csv")
-        split_json = os.path.join(self.raw_dir, f"{self.split}.json")
+        split_key = "valid" if self.split == "val" else self.split
+
+        candidates = [
+            os.path.join(self.root, "devign", f"{split_key}_devign.json"),
+            os.path.join(self.root, "devign", f"{self.split}.json"),
+            os.path.join(self.raw_dir, f"{self.split}.csv"),
+            os.path.join(self.raw_dir, f"{self.split}.json")
+        ]
 
         df = None
-        if os.path.exists(split_csv):
-            print(f"[*] Loading split table from {split_csv}")
-            df = pd.read_csv(split_csv)
-        elif os.path.exists(split_json):
-            print(f"[*] Loading split table from {split_json}")
-            df = pd.read_json(split_json)
-        else:
-            raise FileNotFoundError(f"Neither {split_csv} nor {split_json} exists. Run fix_data.py first!")
+        target_file = None
+        for path in candidates:
+            if os.path.exists(path):
+                target_file = path
+                print(f"[*] Loading split table from {path}")
+                if path.endswith(".csv"):
+                    df = pd.read_csv(path)
+                else:
+                    try:
+                        df = pd.read_json(path, lines=True)
+                    except Exception:
+                        df = pd.read_json(path)
+                break
 
-        if self.max_samples is not None:
-            df = df.iloc[:self.max_samples].reset_index(drop=True)
-            print(f"[*] Limited dataset to first {self.max_samples} samples.")
+        if df is None:
+            raise FileNotFoundError(f"Could not find valid split file for '{self.split}' in candidates: {candidates}")
+
+        target_col = "target" if "target" in df.columns else "label"
+
+        if self.max_samples is not None and len(df) > self.max_samples:
+            # Stratified sampling to maintain exact class balance
+            half = self.max_samples // 2
+            pos_df = df[df[target_col] == 1]
+            neg_df = df[df[target_col] == 0]
+            sampled_pos = pos_df.sample(n=min(len(pos_df), half), random_state=42)
+            sampled_neg = neg_df.sample(n=min(len(neg_df), self.max_samples - len(sampled_pos)), random_state=42)
+            df = pd.concat([sampled_pos, sampled_neg]).sample(frac=1.0, random_state=42).reset_index(drop=True)
+            print(f"[*] Stratified sampling to {len(df)} samples (Pos: {len(sampled_pos)}, Neg: {len(sampled_neg)}).")
 
         embedder = CodeBERTNodeEmbedder()
         data_list: List[Data] = []
-        target_col = "target" if "target" in df.columns else "label"
-
-        print(f"[*] Processing {len(df)} samples for '{self.split}' split...")
+        print(f"[*] Processing {len(df)} samples for '{self.split}' split using CodeBERT on {embedder.device}...")
 
         for idx, row in df.iterrows():
-            if idx % 500 == 0 and idx > 0:
+            if idx % 200 == 0 and idx > 0:
                 print(f"    - Processed {idx}/{len(df)} samples...")
 
             target = int(row[target_col]) if target_col in row and pd.notna(row[target_col]) else 0
@@ -403,7 +451,7 @@ class CPGVulnerabilityDataset(InMemoryDataset):
             edge_types: List[int] = []
 
             # 1. Look for existing Joern DOT/JSON graph file on disk
-            sample_id = row.get("sample_id", idx)
+            sample_id = row.get("idx", row.get("sample_id", idx))
             filename = row.get("filename", f"sample_{sample_id}.c")
             base_name = os.path.splitext(os.path.basename(str(filename)))[0]
 
@@ -421,7 +469,7 @@ class CPGVulnerabilityDataset(InMemoryDataset):
                     graph_found = True
                     break
 
-            # 2. If no graph file on disk, extract CPG from code snippet/function
+            # 2. Extract CPG directly from real code snippet/function
             if not graph_found or len(node_codes) == 0:
                 if "func" in row and pd.notna(row["func"]) and len(str(row["func"]).strip()) > 10:
                     code_text = str(row["func"])
@@ -437,11 +485,9 @@ class CPGVulnerabilityDataset(InMemoryDataset):
                 edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
                 edge_type = torch.tensor(edge_types, dtype=torch.long)
             else:
-                # Self-loop fallback for isolated node
                 edge_index = torch.zeros((2, 1), dtype=torch.long)
                 edge_type = torch.zeros((1,), dtype=torch.long)
 
-            # Ensure edge index bounds
             num_nodes = x.size(0)
             if edge_index.numel() > 0:
                 valid_mask = (edge_index[0] < num_nodes) & (edge_index[1] < num_nodes)

@@ -76,12 +76,11 @@ class FocalLoss(nn.Module):
 # Metric Evaluation Helper
 # ==============================================================================
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device):
+def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device, threshold: Optional[float] = None):
     """Evaluates model on given DataLoader and returns metrics dictionary."""
     model.eval()
     total_loss = 0.0
     all_targets = []
-    all_preds = []
     all_probs = []
 
     for batch in loader:
@@ -94,15 +93,23 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
         total_loss += loss.item() * batch.num_graphs
 
         probs = F.softmax(logits, dim=-1)[:, 1]
-        preds = torch.argmax(logits, dim=-1)
-
         all_targets.extend(y.cpu().numpy().tolist())
-        all_preds.extend(preds.cpu().numpy().tolist())
         all_probs.extend(probs.cpu().numpy().tolist())
 
     y_true = np.array(all_targets)
-    y_pred = np.array(all_preds)
     y_prob = np.array(all_probs)
+
+    best_thresh = threshold if threshold is not None else 0.5
+    if threshold is None and len(y_true) > 0 and len(np.unique(y_true)) > 1:
+        best_f1_val = -1.0
+        for th in np.linspace(0.35, 0.65, 13):
+            th_preds = (y_prob >= th).astype(int)
+            th_f1 = f1_score(y_true, th_preds, zero_division=0)
+            if th_f1 > best_f1_val:
+                best_f1_val = th_f1
+                best_thresh = float(th)
+
+    y_pred = (y_prob >= best_thresh).astype(int) if len(y_prob) > 0 else np.array([])
 
     avg_loss = total_loss / max(len(loader.dataset), 1)
     acc = accuracy_score(y_true, y_pred) if len(y_true) > 0 else 0.0
@@ -111,7 +118,6 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
     f1 = f1_score(y_true, y_pred, zero_division=0) if len(y_true) > 0 else 0.0
 
     try:
-        # ROC-AUC requires at least one sample of each class
         if len(np.unique(y_true)) > 1:
             auc = roc_auc_score(y_true, y_prob)
         else:
@@ -125,7 +131,8 @@ def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device:
         "precision": prec,
         "recall": rec,
         "f1": f1,
-        "roc_auc": auc
+        "roc_auc": auc,
+        "threshold": best_thresh
     }
 
 
@@ -137,11 +144,11 @@ def train(args):
     print(f"[*] Training on device: {device}")
 
     # 1. Load PyG Datasets
-    val_samples = max(args.max_samples // 8, 30) if args.max_samples else None
-    test_samples = max(args.max_samples // 8, 30) if args.max_samples else None
-    train_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="train", max_samples=args.max_samples)
-    val_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="val", max_samples=val_samples)
-    test_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="test", max_samples=test_samples)
+    val_samples = max(args.max_samples // 8, 50) if args.max_samples else None
+    test_samples = max(args.max_samples // 8, 50) if args.max_samples else None
+    train_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="train", max_samples=args.max_samples, dataset_name=args.dataset_name)
+    val_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="val", max_samples=val_samples, dataset_name=args.dataset_name)
+    test_dataset = CPGVulnerabilityDataset(root=args.data_dir, split="test", max_samples=test_samples, dataset_name=args.dataset_name)
 
     print(f"[+] Loaded splits -> Train: {len(train_dataset)}, Val: {len(val_dataset)}, Test: {len(test_dataset)}")
 
@@ -179,6 +186,7 @@ def train(args):
     scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
 
     # 4. Training Loop
+    best_score = -1.0
     best_val_f1 = -1.0
     best_val_auc = -1.0
     best_epoch = 0
@@ -213,7 +221,8 @@ def train(args):
 
         # Validation step
         val_metrics = evaluate(model, val_loader, criterion, device)
-        scheduler.step(val_metrics["f1"])
+        val_auc = val_metrics["roc_auc"]
+        scheduler.step(val_auc)
 
         elapsed = time.time() - t_start
         print(f"Epoch [{epoch:02d}/{args.epochs:02d}] ({elapsed:.1f}s) | "
@@ -221,12 +230,13 @@ def train(args):
               f"Val Loss: {val_metrics['loss']:.4f} | "
               f"Val Acc: {val_metrics['accuracy']:.4f} | "
               f"Val F1: {val_metrics['f1']:.4f} | "
-              f"Val AUC: {val_metrics['roc_auc']:.4f}")
+              f"Val AUC: {val_metrics['roc_auc']:.4f} | "
+              f"Thresh: {val_metrics['threshold']:.2f}")
 
-        # Checkpoint: Save best model weights
-        if val_metrics["f1"] > best_val_f1:
+        # Checkpoint: Save best model based on ROC-AUC
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
             best_val_f1 = val_metrics["f1"]
-            best_val_auc = val_metrics["roc_auc"]
             best_epoch = epoch
 
             checkpoint = {
@@ -234,6 +244,7 @@ def train(args):
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_metrics": val_metrics,
+                "threshold": val_metrics["threshold"],
                 "config": {
                     "in_channels": args.in_channels,
                     "hidden_dim": args.hidden_dim,
@@ -244,18 +255,20 @@ def train(args):
             }
             os.makedirs(os.path.dirname(os.path.abspath(args.save_path)), exist_ok=True)
             torch.save(checkpoint, args.save_path)
-            print(f"    --> [SAVED] New best model saved to {args.save_path} (F1: {best_val_f1:.4f})")
+            print(f"    --> [SAVED] New best model saved to {args.save_path} (AUC: {best_val_auc:.4f}, F1: {best_val_f1:.4f})")
 
     print("\n" + "=" * 70)
-    print(f"[+] Training finished! Best model occurred at Epoch {best_epoch} with Val F1: {best_val_f1:.4f}")
+    print(f"[+] Training finished! Best model occurred at Epoch {best_epoch} with Val AUC: {best_val_auc:.4f}, F1: {best_val_f1:.4f}")
 
     # 5. Final Evaluation on Test Set using Best Model
+    calibrated_th = 0.5
     if os.path.exists(args.save_path):
         print(f"[*] Loading best checkpoint from {args.save_path} for final test evaluation...")
         checkpoint = torch.load(args.save_path, map_location=device, weights_only=False)
         model.load_state_dict(checkpoint["model_state_dict"])
+        calibrated_th = checkpoint.get("threshold", 0.5)
 
-    test_metrics = evaluate(model, test_loader, criterion, device)
+    test_metrics = evaluate(model, test_loader, criterion, device, threshold=calibrated_th)
     print("\n" + "=" * 50)
     print("               FINAL TEST SET RESULTS")
     print("=" * 50)
@@ -270,19 +283,20 @@ def train(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Train GGNN on CPGs for Vulnerability Prediction.")
-    parser.add_argument("--data_dir", type=str, default="data", help="Dataset directory containing clean_splits/")
+    parser.add_argument("--data_dir", type=str, default="data", help="Dataset directory containing clean_splits/ or devign/")
+    parser.add_argument("--dataset_name", type=str, default="devign", help="Dataset identifier for caching")
     parser.add_argument("--save_path", type=str, default="models/best_model.pth", help="Checkpoint save destination")
     parser.add_argument("--in_channels", type=int, default=768, help="Node embedding dim from CodeBERT")
     parser.add_argument("--hidden_dim", type=int, default=256, help="GGNN hidden dimension")
     parser.add_argument("--num_layers", type=int, default=4, help="GGNN unrolling timesteps")
     parser.add_argument("--num_edge_types", type=int, default=3, help="Number of edge relations (AST, CFG, DFG)")
     parser.add_argument("--dropout", type=float, default=0.3, help="Dropout probability")
-    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="Graph mini-batch size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="AdamW learning rate")
+    parser.add_argument("--lr", type=float, default=5e-4, help="AdamW learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay")
-    parser.add_argument("--gamma", type=float, default=2.0, help="Focal loss focusing parameter")
-    parser.add_argument("--max_samples", type=int, default=None, help="Quick test sample limit (None for full)")
+    parser.add_argument("--gamma", type=float, default=1.0, help="Focal loss focusing parameter")
+    parser.add_argument("--max_samples", type=int, default=1200, help="Quick test sample limit (None for full)")
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Compute device")
     args = parser.parse_args()
 

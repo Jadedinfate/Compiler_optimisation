@@ -7,6 +7,8 @@ class DataConfig:
     CLEAN_SPLITS_DIR = Path("data/clean_splits")
     DATA_PATH = Path("data/clean_splits/train.csv")
     MODELS_DIR = Path("models")
+    TABULAR_MODEL_PATH = Path("models/tabular_model.joblib")
+    SCALER_PATH = Path("models/scaler.joblib")
 
     TARGET_COLUMN = "target"
 
@@ -30,6 +32,10 @@ class TrainingConfig:
     TEST_SIZE = 0.10
     VALIDATION_SIZE = 0.10
     RANDOM_STATE = 42
+    N_ESTIMATORS = 150
+    MAX_DEPTH = 16
+    LEARNING_RATE = 0.08
+    USE_ALL_SPLITS = True
 
 
 class ProjectConfig:

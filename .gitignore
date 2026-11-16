@@ -24,3 +24,10 @@ dist/
 
 logs
 .env
+
+# Large raw datasets and local processed caches
+data/devign/
+data/processed/devign_*.pt
+data/processed/train_500.pt
+data/processed/*_62.pt
+models/best_model_500.pth

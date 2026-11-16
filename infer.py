@@ -125,10 +125,12 @@ def predict_file(file_path: str, model_path: str, device_name: str, show_attenti
         if os.path.exists(candidate):
             model_path = candidate
 
+    calibrated_threshold = 0.5
     if os.path.exists(model_path):
         print(f"[*] Loading trained weights from : {model_path}")
         checkpoint = torch.load(model_path, map_location=device, weights_only=False)
         cfg = checkpoint.get("config", {})
+        calibrated_threshold = checkpoint.get("threshold", 0.5)
         in_channels = cfg.get("in_channels", in_channels)
         hidden_dim = cfg.get("hidden_dim", hidden_dim)
         num_layers = cfg.get("num_layers", num_layers)
@@ -166,9 +168,9 @@ def predict_file(file_path: str, model_path: str, device_name: str, show_attenti
             return_attention=True
         )
         probs = F.softmax(logits, dim=-1).squeeze(0)
-        pred_class = int(torch.argmax(probs).item())
         conf_benign = float(probs[0].item()) * 100.0
         conf_vuln = float(probs[1].item()) * 100.0
+        pred_class = 1 if (conf_vuln / 100.0) >= calibrated_threshold else 0
 
     # 5. Output Result
     print("\n" + "=" * 65)
@@ -179,7 +181,7 @@ def predict_file(file_path: str, model_path: str, device_name: str, show_attenti
         print(f"  >>> CONFIDENCE  : \033[91m{conf_vuln:.2f}%\033[0m")
     else:
         print(f"  >>> RESULT      : \033[92m[SAFE]\033[0m")
-        print(f"  >>> CONFIDENCE  : \033[92{conf_benign:.2f}%\033[0m")
+        print(f"  >>> CONFIDENCE  : \033[92m{conf_benign:.2f}%\033[0m")
 
     print("-" * 65)
     print(f"  Class 0 (Benign/Safe) Probability      : {conf_benign:.2f}%")

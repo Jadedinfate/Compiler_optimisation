@@ -11,10 +11,14 @@ Architecture:
    producing binary vulnerability logits (0: benign, 1: vulnerable).
 """
 
+import warnings
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Union
+
+# Suppress PyG GlobalAttention deprecation warning to preserve checkpoint backward compatibility
+warnings.filterwarnings("ignore", message=".*GlobalAttention.*is deprecated.*")
 from torch_geometric.nn import GatedGraphConv, GlobalAttention
 
 
@@ -70,6 +74,8 @@ class RelationalGatedGraphBlock(nn.Module):
         # Clamp edge_type within valid relation bounds
         edge_type = torch.clamp(edge_type, 0, self.num_edge_types - 1)
 
+        deg = torch.clamp(torch.bincount(dst, minlength=num_nodes).unsqueeze(-1).float(), min=1.0)
+
         # Message passing unrolled over T timesteps
         for t in range(self.num_layers):
             messages = torch.zeros((num_nodes, self.hidden_dim), device=x.device, dtype=x.dtype)
@@ -88,6 +94,7 @@ class RelationalGatedGraphBlock(nn.Module):
                 # Scatter-add messages into destination nodes
                 messages.index_add_(0, r_dst, msg)
 
+            messages = messages / deg
             # GRU update: h_v^(t) = GRU(m_v, h_v^(t-1))
             h = self.gru(messages, h)
 
@@ -146,6 +153,7 @@ class CPGGGNNModel(nn.Module):
 
         # 4. MLP Classification Head
         self.classifier = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(p=dropout),
@@ -177,10 +185,11 @@ class CPGGGNNModel(nn.Module):
             batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
 
         # 1. Project input CodeBERT embeddings
-        h = self.node_proj(x)
+        h_init = self.node_proj(x)
 
         # 2. Relational GGNN message passing
-        h = self.ggnn(h, edge_index, edge_type=edge_type)
+        h_gnn = self.ggnn(h_init, edge_index, edge_type=edge_type)
+        h = h_init + h_gnn
         h = F.dropout(h, p=self.dropout_rate, training=self.training)
 
         # 3. Compute Soft Attention Weights & Pool
