@@ -267,14 +267,16 @@ python infer.py --file examples/test_vulnerable.c --model models/best_model.pth 
 
 ## 📈 Maximum Capacity Benchmark Performance
 
-The model was trained on the full 27,318 Devign dataset across 25 epochs on an NVIDIA GeForce RTX 4060 GPU with weighted focal loss. Full execution logs are archived in `logs/training_gnn_max_capacity.log`.
+The model was trained on the full 27,318 Devign dataset across 80 epochs with Early Stopping (`patience=15`) on an NVIDIA GeForce RTX 4060 GPU with weighted focal loss. Full execution logs are archived in `logs/training_gnn_max_capacity.log`.
 
-| Metric | Tabular Baseline (Random Forest) | GNN (Sampled 1.2k) | Relational GGNN (Full 27k Devign) |
+| Metric | Tabular Baseline (Random Forest) | GNN (25 Epochs) | Relational GGNN (80 Epochs + Early Stopping) |
 |---|---|---|---|
-| **Dataset Scale** | 2,746 samples | 1,200 samples | **27,318 samples** (21,854 train, 2,732 val, 2,732 test) |
-| **Test Recall (Vuln)** | 0.8140 | 0.8850 | **0.9753** (97.53% detection rate) |
-| **Test F1-Score** | 0.5482 | 0.5821 | **0.6340** |
-| **Test ROC-AUC** | 0.5210 | 0.5430 | **0.5608** |
+| **Dataset Scale** | 2,746 samples | 27,318 samples | **27,318 samples** (21,854 train, 2,732 val, 2,732 test) |
+| **Test ROC-AUC** | 0.5210 | 0.5608 | **0.6196** (+5.88% improvement) |
+| **Test Accuracy** | 0.4912 | 0.4828 | **0.5714** (57.14% on 2.7k test functions) |
+| **Test Precision** | 0.4501 | 0.4697 | **0.5275** (52.75% precision) |
+| **Test Recall (Vuln)** | 0.8140 | 0.9753 | **0.8781** (calibrated) / 0.6422 (0.50 threshold) |
+| **Test F1-Score** | 0.5482 | 0.6340 | **0.6350** |
 | **Statement Attention** | ❌ No | ✅ Yes | ✅ **Yes (CodeBERT + Soft-Attention)** |
 
 ---

@@ -191,6 +191,7 @@ def train(args):
     best_val_f1 = -1.0
     best_val_auc = -1.0
     best_epoch = 0
+    patience_counter = 0
 
     print("\n" + "=" * 70)
     print("                     STARTING TRAINING LOOP")
@@ -239,6 +240,7 @@ def train(args):
             best_val_auc = val_auc
             best_val_f1 = val_metrics["f1"]
             best_epoch = epoch
+            patience_counter = 0
 
             checkpoint = {
                 "epoch": epoch,
@@ -257,6 +259,13 @@ def train(args):
             os.makedirs(os.path.dirname(os.path.abspath(args.save_path)), exist_ok=True)
             torch.save(checkpoint, args.save_path)
             print(f"    --> [SAVED] New best model saved to {args.save_path} (AUC: {best_val_auc:.4f}, F1: {best_val_f1:.4f})")
+        else:
+            patience_counter += 1
+            if args.patience > 0:
+                print(f"    --> EarlyStopping patience: {patience_counter}/{args.patience}")
+                if patience_counter >= args.patience:
+                    print(f"\n[!] Early stopping triggered: Validation ROC-AUC did not improve for {args.patience} consecutive epochs.")
+                    break
 
     print("\n" + "=" * 70)
     print(f"[+] Training finished! Best model occurred at Epoch {best_epoch} with Val AUC: {best_val_auc:.4f}, F1: {best_val_f1:.4f}")
@@ -310,6 +319,7 @@ def main():
     parser.add_argument("--num_edge_types", type=int, default=3, help="Number of edge relations (AST, CFG, DFG)")
     parser.add_argument("--dropout", type=float, default=0.3, help="Dropout probability")
     parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs")
+    parser.add_argument("--patience", type=int, default=15, help="Early stopping patience in epochs (0 to disable)")
     parser.add_argument("--batch_size", type=int, default=64, help="Graph mini-batch size")
     parser.add_argument("--lr", type=float, default=1e-3, help="AdamW learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="AdamW weight decay")
